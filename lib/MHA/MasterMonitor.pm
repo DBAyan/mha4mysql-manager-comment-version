@@ -277,12 +277,15 @@ sub wait_until_master_is_unreachable() {
   my $func_rc = 1;
   eval {
     $g_logfile = undef if ($g_check_only);
+    # 初始化日志
     $log = MHA::ManagerUtil::init_log($g_logfile);
-
+    # 检查配置文件是否存在 ，不存在的话 报错并退出
     unless ( -f $g_config_file ) {
       $log->error("Configuration file $g_config_file not found!");
       croak;
     }
+
+    # 从配置文件中读取配置
     my ( $sc_ref, $binlog_server_ref ) = new MHA::Config(
       logger     => $log,
       globalfile => $g_global_config_file,
@@ -290,46 +293,63 @@ sub wait_until_master_is_unreachable() {
     )->read_config();
     @servers_config = @$sc_ref;
 
+    # 如果变量 $g_logfile没有定义 ，也不是检查模式 ，然后servers_config数组中的第一个元素中的manager_log键 有值 ，则定义g_logfile的值为$servers_config[0]->{manager_log}
     if ( !$g_logfile && !$g_check_only && $servers_config[0]->{manager_log} ) {
       $g_logfile = $servers_config[0]->{manager_log};
     }
+
+    # 重新初始化日志，因为现在读取了配置文件，所以可以读取到 日志文件的名称 和 日志输出级别。后面输出的日志都可以记录到文件中
     $log =
       MHA::ManagerUtil::init_log( $g_logfile, $servers_config[0]->{log_level} );
+
+    # 输出MHA 的 版本
     $log->info("MHA::MasterMonitor version $MHA::ManagerConst::VERSION.");
+
+    # 如果变量 $g_workdir 不存在 ，
     unless ($g_workdir) {
+      # 如果$servers_config[0]->{manager_workdir} (配置文件中的配置项manager_workdir) 存在 ，则赋值给 $g_workdir
       if ( $servers_config[0]->{manager_workdir} ) {
         $g_workdir = $servers_config[0]->{manager_workdir};
       }
       else {
+        # $servers_config[0]->{manager_workdir}没有值 (配置文件中没有配置项manager_workdir) ，则使用"/var/tmp" 作为MHA的工作目录
         $g_workdir = "/var/tmp";
       }
     }
-
+    # 检查 node 的版本 和 manager的 版本 ，如果 $node_version < $MHA::ManagerConst::NODE_MIN_VERSION（0.54）  则退出
     MHA::ManagerUtil::check_node_version($log);
     MHA::NodeUtil::check_manager_version($MHA::ManagerConst::VERSION);
+
+    # 创建MHA的工作目录
     MHA::NodeUtil::create_dir_if($g_workdir);
+    # 如果不是检查模式 ，创建实例的状态标识文件 例如 app1.master.health
     unless ($g_check_only) {
       $_status_handler =
         new MHA::FileStatus( conffile => $g_config_file, dir => $g_workdir );
       $_status_handler->init();
-
+      # 如果状态标识文件存在 在告警 并且 删除状态标识文件
       if ( -f $_status_handler->{status_file} ) {
         $log->warning(
 "$_status_handler->{status_file} already exists. You might have killed manager with SIGKILL(-9), may run two or more monitoring process for the same application, or use the same working directory. Check for details, and consider setting --workdir separately."
         );
         MHA::NodeUtil::drop_file_if( $_status_handler->{status_file} );
       }
+      # 更新状态标识文件中的状态
       $_status_handler->update_status(
         $MHA::ManagerConst::ST_INITIALIZING_MONITOR_S);
     }
 
     $_server_manager = new MHA::ServerManager( servers => \@servers_config );
     $_server_manager->set_logger($log);
-
+    # 连接配置文件中的所有的实例 并且根据实例状态分成不同数组
     $_server_manager->connect_all_and_read_server_status();
+    # 宕机的实例数组
     @dead_servers  = $_server_manager->get_dead_servers();
+    # 存活的实例数组
     @alive_servers = $_server_manager->get_alive_servers();
+    # 存活的从实例数组
     @alive_slaves  = $_server_manager->get_alive_slaves();
+    # 打印到屏幕 输出到日志中
     $log->info("Dead Servers:");
     $_server_manager->print_dead_servers();
     $log->info("Alive Servers:");
@@ -338,17 +358,22 @@ sub wait_until_master_is_unreachable() {
     $_server_manager->print_alive_slaves();
     $_server_manager->print_failed_slaves_if();
     $_server_manager->print_unmanaged_slaves_if();
-
+    # 获取目前存活的主库
     $current_master = $_server_manager->get_current_alive_master();
 
+    # 没有存活的主库
     unless ($current_master) {
+      # 交互模式
       if ($g_interactive) {
+        # 打印交互信息
         print "Master is not currently alive. Proceed? (yes/NO): ";
         my $ret = <STDIN>;
         chomp($ret);
         die "abort" if ( lc($ret) !~ /^y/ );
       }
     }
+
+    # 检查存活从实例的配置 有4项检查 。检查通过返回0 。
     if (
       $_server_manager->validate_slaves(
         $servers_config[0]->{check_repl_filter},
@@ -359,7 +384,10 @@ sub wait_until_master_is_unreachable() {
       $log->error("Slave configurations is not valid.");
       croak;
     }
+    # 获取不能成为主库的实例 bad  (有5种情况，详情见以下函数)
     my @bad = $_server_manager->get_bad_candidate_masters();
+
+    # 如果bad 数组包含所有的存活的从实例 数组 ，则报错退出
     if ( $#alive_slaves <= $#bad ) {
       $log->error( "None of slaves can be master. Check failover "
           . "configuration file or log-bin settings in my.cnf" );
@@ -367,6 +395,7 @@ sub wait_until_master_is_unreachable() {
     }
     $_server_manager->check_repl_priv();
 
+    # 如果不是GTID模式 则需要检查SSH 和 node的版本 （node package是否安装 ，node version 是否高于等于manage version）
     if ( !$_server_manager->is_gtid_auto_pos_enabled() ) {
       $log->info("GTID (with auto-pos) is not supported");
       MHA::SSHCheck::do_ssh_connection_check( \@alive_servers, $log,
@@ -381,10 +410,13 @@ sub wait_until_master_is_unreachable() {
       }
       $log->info(" Version check ok.");
     }
+    # 如果是GTID模式 则跳过所有的 SSH检查和 node package检查
     else {
       $log->info(
 "GTID (with auto-pos) is supported. Skipping all SSH and Node package checking."
       );
+      # GTID模式需要检查binlog 包括 SSH 和 使用以下命令检查
+      #  "save_binary_logs --command=test --start_pos=4 --binlog_dir=$target->{master_binlog_dir} --output_file=$workfile --manager_version=$MHA::ManagerConst::VERSION";
       check_binlog_servers( $binlog_server_ref, $log );
     }
 
@@ -401,7 +433,9 @@ sub wait_until_master_is_unreachable() {
     }
     $_server_manager->validate_num_alive_servers( $current_master,
       $g_ignore_fail_on_start );
+    # 检查主库的 SSH node package
     if ( check_master_ssh_env($current_master) ) {
+      # 如果不是GTID模式 并且 使用命令 save_binary_logs 检查binlog 失败 ，则退出
       if ( !$_server_manager->is_gtid_auto_pos_enabled()
         && check_binlog($current_master) )
       {
@@ -409,20 +443,29 @@ sub wait_until_master_is_unreachable() {
         croak;
       }
     }
+    # 更新状态标识文件里的内容 例如 （ 116517	0:PING_OK	master:10.79.23.45  ）
     $_status_handler->set_master_host( $current_master->{hostname} )
       unless ($g_check_only);
-
+    # 如果不是GTID模式 并且检查从实例的 使用命令 ： apply_diff_relay_logs 失败 则退出
     if ( !$_server_manager->is_gtid_auto_pos_enabled() && check_slave_env() ) {
       $log->error("Slave configuration failed.");
       croak;
     }
+    # 打印当前的主从实例 和 拓扑结构
     $_server_manager->print_servers_ascii($current_master);
+    # 如果设置允许的主从延迟 检查延迟状况
     $_server_manager->check_replication_health($g_seconds_behind_master)
       if ($g_check_repl_health);
+    # 检查脚本  master_ip_failover_script} --command=status  和  {shutdown_script} --command=status。 详细命令可以看下面的函数
     check_scripts($current_master);
+    # 断开连接
     $_server_manager->disconnect_all();
     $func_rc = 0;
   };
+  # 在 Perl 语言中，"$@" 是一个特殊变量，用于捕获 eval 语句执行时产生的错误信息。
+  # 在使用 eval 语句时，如果被执行的代码块中发生了异常，$@ 就会被设置为错误信息。
+  # 如果 eval 执行成功，$@ 就会被设置为一个空字符串。在程序中，通常会使用 $@ 来判断 eval 语句是否执行成功，或者捕获 eval 语句中发生的错误信息。
+
   if ($@) {
     $log->error("Error happened on checking configurations. $@") if ($log);
     undef $@;
@@ -430,10 +473,12 @@ sub wait_until_master_is_unreachable() {
   }
   return $func_rc if ($g_check_only);
 
-  # master ping. This might take hours/days/months..
+  # master ping. This might take hours/days/months.. 进入到主库监控的环节 这个时间可能很久 。
+  # 将$func_rc 设置为1  这个应该是一个状态码 或者返回状态量
   $func_rc = 1;
   eval {
     my $ssh_check_command;
+    # 如果不是GTID模式 并且 $_master_node_version 有值  $_master_node_version >=0.53
     if (!$_server_manager->is_gtid_auto_pos_enabled()
       && $_master_node_version
       && $_master_node_version >= 0.53 )
@@ -443,8 +488,10 @@ sub wait_until_master_is_unreachable() {
     else {
       $ssh_check_command = "exit 0";
     }
+    # 打印检查命令
     $log->debug("SSH check command: $ssh_check_command");
 
+    # 主实例健康检查
     $_master_ping = new MHA::HealthCheck(
       user                   => $current_master->{user},
       password               => $current_master->{password},
@@ -464,10 +511,12 @@ sub wait_until_master_is_unreachable() {
       workdir                => $g_workdir,
       ping_type              => $current_master->{ping_type},
     );
+    # 检查间隔，默认3秒
     $log->info(
       sprintf( "Set master ping interval %d seconds.",
         $_master_ping->get_ping_interval() )
     );
+    # 如果设置了二路检查脚本
     if ( $current_master->{secondary_check_script} ) {
       $_master_ping->set_secondary_check_script(
         $current_master->{secondary_check_script} );
@@ -477,6 +526,7 @@ sub wait_until_master_is_unreachable() {
       );
     }
     else {
+      # 强烈建议设置了二路检查脚本
       $log->warning(
 "secondary_check_script is not defined. It is highly recommended setting it to check master reachability from two or more routes."
       );
@@ -486,6 +536,7 @@ sub wait_until_master_is_unreachable() {
       sprintf( "Starting ping health check on %s..",
         $current_master->get_hostinfo() )
     );
+    # 执行函数  wait_until_unreachable() 是个while(1)的循环
     ( $ret, $ssh_reachable ) = $_master_ping->wait_until_unreachable();
     if ( $ret eq '2' ) {
       $log->error(
@@ -507,13 +558,15 @@ sub wait_until_master_is_unreachable() {
     }
     $func_rc = 0;
   };
+  # 检查 eval 代码块有有没有异常
   if ($@) {
     $log->error("Error happened on health checking. $@");
     undef $@;
     return $func_rc;
   }
+  # 更新状态标识文件
   $_status_handler->update_status($MHA::ManagerConst::ST_PING_FAILED_S);
-
+  # 返回以下内容
   return ( $func_rc, $current_master, $ssh_reachable );
 }
 

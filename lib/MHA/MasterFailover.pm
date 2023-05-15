@@ -135,17 +135,20 @@ sub check_settings($) {
   my $servers_config_ref = shift;
   my @servers_config     = @$servers_config_ref;
   my $dead_master;
+  # 检查node 的版本
   MHA::ManagerUtil::check_node_version($log);
+  # 状态标识文件初始化
   $_status_handler =
     new MHA::FileStatus( conffile => $g_config_file, dir => $g_workdir );
   $_status_handler->init();
   $_status_handler->set_master_host( $_dead_master_arg{hostname} );
   my $appname = $_status_handler->{basename};
+  # 切换完成 和 切换失败的标识如下
   $_failover_complete_file = "$g_workdir/$appname.failover.complete";
   $_failover_error_file    = "$g_workdir/$appname.failover.error";
-
+  # 更新状态标识文件 FAILOVER_RUNNING
   $_status_handler->update_status($MHA::ManagerConst::ST_FAILOVER_RUNNING_S);
-
+  # 创建$_server_manager对象 ，
   $_server_manager = new MHA::ServerManager( servers => \@servers_config );
   $_server_manager->set_logger($log);
   if ($g_interactive) {
@@ -176,19 +179,20 @@ sub check_settings($) {
     );
     croak;
   }
-
+  # 获取宕机的实例 存活的实例 存活的从实例三个数组
   my @dead_servers  = $_server_manager->get_dead_servers();
   my @alive_servers = $_server_manager->get_alive_servers();
   my @alive_slaves  = $_server_manager->get_alive_slaves();
 
-  #Make sure that dead server is current master only
+  #Make sure that dead server is current master only 确保宕机的实例 只有当前主库
   $log->info("Dead Servers:");
   $_server_manager->print_dead_servers();
+  # 如果没有宕机的实例 退出
   if ( $#dead_servers < 0 ) {
     $log->error("None of server is dead. Stop failover.");
     croak;
   }
-
+  # 从@dead_servers数组中循环匹配宕机的主库 ，如果找到宕机的主库 ，跳出循环 ，将参数$dead_master_found设置为1
   my $dead_master_found = 0;
   foreach my $d (@dead_servers) {
     if ( $d->{hostname} eq $_dead_master_arg{hostname} ) {
@@ -197,13 +201,14 @@ sub check_settings($) {
       last;
     }
   }
+  # 如果宕机的主库不在@dead_servers数组中，打印日志 退出
   unless ($dead_master_found) {
     $log->error(
       "The master $_dead_master_arg{hostname} is not dead. Stop failover.");
     croak;
   }
 
-# quick check that the dead server is really dead
+# quick check that the dead server is really dead 快速检查宕机的实例真正的宕机了
 # not double check when ping_type is insert,
 # because check_connection_fast_util can rerurn true if insert-check detects I/O failure.
   if ( $servers_config[0]->{ping_type} ne $MHA::ManagerConst::PING_TYPE_INSERT )
@@ -226,14 +231,14 @@ sub check_settings($) {
     }
     $log->info(" ok.");
   }
-
+  # 打印日志
   $log->info("Alive Servers:");
   $_server_manager->print_alive_servers();
   $log->info("Alive Slaves:");
   $_server_manager->print_alive_slaves();
   $_server_manager->print_failed_slaves_if();
   $_server_manager->print_unmanaged_slaves_if();
-
+  # ？ 判断保存文件的后缀
   if ( $dead_master->{handle_raw_binlog} ) {
     $_saved_file_suffix = ".binlog";
   }
@@ -243,12 +248,13 @@ sub check_settings($) {
 
   foreach my $slave (@alive_slaves) {
 
-    # Master_Host is either hostname or IP address of the current master
+    # Master_Host is either hostname or IP address of the current master 宕机的主实例hostname或IP 不是当前主实例hostname或IP
     if ( $dead_master->{hostname} ne $slave->{Master_Host}
       && $dead_master->{ip} ne $slave->{Master_Host}
       && $dead_master->{hostname} ne $slave->{Master_IP}
       && $dead_master->{ip} ne $slave->{Master_IP} )
     {
+      # 打印日志 从实例的主实例是不是宕机的主实例，然后退出
       $log->error(
         sprintf(
           "Slave %s does not replicate from dead master %s. Stop failover.",
@@ -268,11 +274,12 @@ sub check_settings($) {
   }
   $_server_manager->validate_num_alive_servers( $dead_master, 1 );
 
-  # Checking last failover error file
+  # Checking last failover error file 如果设置了参数忽略上一次的切换 则删除状态标识文件
   if ($g_ignore_last_failover) {
     MHA::NodeUtil::drop_file_if($_failover_error_file);
     MHA::NodeUtil::drop_file_if($_failover_complete_file);
   }
+  # 如果故障转移失败状态标识文件存在 ，打印日志并退出
   if ( -f $_failover_error_file ) {
     my $message =
         "Failover error flag file $_failover_error_file "
@@ -282,7 +289,7 @@ sub check_settings($) {
     $log->error($message);
     croak;
   }
-
+  # 如果是交互模式
   if ($g_interactive) {
     print "Master "
       . $dead_master->get_hostinfo()
@@ -292,7 +299,7 @@ sub check_settings($) {
     die "Stopping failover." if ( lc($ret) !~ /^y/ );
   }
 
-  # If the last failover was done within 8 hours, we don't do failover
+  # If the last failover was done within 8 hours, we don't do failover 如果上次切换是在8小时内 ，则不再进行主库切换
   # to avoid ping-pong
   if ( -f $_failover_complete_file ) {
     my $lastts       = ( stat($_failover_complete_file) )[9];
@@ -325,8 +332,9 @@ sub force_shutdown_internal($) {
   $log->info(
 "Forcing shutdown so that applications never connect to the current master.."
   );
-
+  # 如果配置了 master_ip_failover_script 脚本
   if ( $dead_master->{master_ip_failover_script} ) {
+    # 执行master_ip_failover_script （比如VIP下线）
     my $command =
 "$dead_master->{master_ip_failover_script} --orig_master_host=$dead_master->{hostname} --orig_master_ip=$dead_master->{ip} --orig_master_port=$dead_master->{port}";
     if ( $_real_ssh_reachable == 1 ) {
@@ -416,7 +424,7 @@ sub force_shutdown_internal($) {
 
 sub force_shutdown($) {
   my $dead_master = shift;
-
+  # 组装参数 例如邮件的内容 ，邮件的主题
   my $appname      = $_status_handler->{basename};
   my @alive_slaves = $_server_manager->get_alive_slaves();
   $mail_subject =
@@ -469,7 +477,7 @@ sub force_shutdown($) {
 
   $_real_ssh_reachable = $g_ssh_reachable;
 
-  # SSH reachability is unknown. Verify here.
+  # SSH reachability is unknown. Verify here.检查ssh 连通性
   if ( $_real_ssh_reachable >= 2 ) {
     if (
       MHA::HealthCheck::ssh_check_simple(
@@ -483,7 +491,7 @@ sub force_shutdown($) {
     }
     else {
 
-      # additional check
+      # additional check 另外一个检查
       if (
         MHA::ManagerUtil::get_node_version(
           $dead_master->{logger},   $dead_master->{ssh_user},
@@ -514,10 +522,12 @@ sub force_shutdown($) {
 
 sub check_set_latest_slaves {
   $_server_manager->read_slave_status();
+  # 最新的binlog的从库文件与位点
   $_server_manager->identify_latest_slaves();
   $log->info(
     "Latest slaves (Slaves that received relay log files to the latest):");
   $_server_manager->print_latest_slaves();
+  # 最旧的binlog的从库文件与位点
   $_server_manager->identify_oldest_slaves();
   $log->info("Oldest slaves:");
   $_server_manager->print_oldest_slaves();
@@ -692,21 +702,26 @@ sub save_master_binlog_internal {
   my $dead_master         = shift;
 
   $log->info("Fetching dead master's binary logs..");
+  # 保存的差异binlog的文件名称 格式如下： saved_master_binlog_from_hostname_port_datetime.binlog
   $_diff_binary_log_basename =
       "saved_master_binlog_from_"
     . $dead_master->{hostname} . "_"
     . $dead_master->{port} . "_"
     . $_start_datetime
     . $_saved_file_suffix;
+  # 保存差异binlog日志的本地目录 （加上manager_work目录+ 文件名）
   $_diff_binary_log = "$g_workdir/$_diff_binary_log_basename";
   my $_diff_binary_log_remote =
     "$dead_master->{remote_workdir}/$_diff_binary_log_basename";
-
+  # 如果文件存在 删除该文件
   if ( -f $_diff_binary_log ) {
+    # 在Perl中，unlink是一个用于删除文件或符号链接的函数。
     unlink($_diff_binary_log);
   }
+  # 保存二进制日志的命令
   my $command =
 "save_binary_logs --command=save --start_file=$master_log_file  --start_pos=$read_master_log_pos --binlog_dir=$dead_master->{master_binlog_dir} --output_file=$_diff_binary_log_remote --handle_raw_binlog=$dead_master->{handle_raw_binlog} --disable_log_bin=$dead_master->{disable_log_bin} --manager_version=$MHA::ManagerConst::VERSION";
+  # 根据不同条件组装参数
   if ( $dead_master->{client_bindir} ) {
     $command .= " --client_bindir=$dead_master->{client_bindir}";
   }
@@ -720,6 +735,7 @@ sub save_master_binlog_internal {
   if ( $dead_master->{log_level} eq "debug" ) {
     $command .= " --debug ";
   }
+  # 打印日志
   my $ssh_user_host = $dead_master->{ssh_user} . '@' . $dead_master->{ssh_ip};
   $log->info(
     sprintf(
@@ -727,6 +743,7 @@ sub save_master_binlog_internal {
       $dead_master->get_hostinfo(), $command
     )
   );
+  # 执行保存日志的命令
   my ( $high, $low ) =
     MHA::ManagerUtil::exec_ssh_cmd( $ssh_user_host, $dead_master->{ssh_port},
     $command, $g_logfile );
@@ -771,8 +788,12 @@ sub save_master_binlog_internal {
   }
 }
 
+# 保存主库的binlog
 sub save_master_binlog {
+  # 接收参数
   my $dead_master = shift;
+  # ssh可达（主库服务器没有宕机） 并且没有设置跳过保存主库的binlog
+  # 检查node 版本 node的version 必须 大于等于 0.54
   if ( $_real_ssh_reachable && !$g_skip_save_master_binlog ) {
     MHA::ManagerUtil::check_node_version(
       $log,
@@ -781,8 +802,10 @@ sub save_master_binlog {
       $dead_master->{ssh_ip},
       $dead_master->{ssh_port}
     );
+    # 最新从库上master的binlog文件名
     my $latest_file =
       ( $_server_manager->get_latest_slaves() )[0]->{Master_Log_File};
+    # 最新从库上master的binlog的位点
     my $latest_pos =
       ( $_server_manager->get_latest_slaves() )[0]->{Read_Master_Log_Pos};
     save_master_binlog_internal( $latest_file, $latest_pos, $dead_master, );
@@ -859,12 +882,17 @@ sub find_slave_with_all_relay_logs {
 sub find_latest_base_slave_internal {
   my $oldest_slave  = ( $_server_manager->get_oldest_slaves() )[0];
   my @latest_slaves = $_server_manager->get_latest_slaves();
+  # 最老的从库的Master_Log_File 和 Read_Master_Log_Pos （IO 线程接收主库的binlog 写到从库relay log的文件和位置）
   my $oldest_mlf    = $oldest_slave->{Master_Log_File};
   my $oldest_mlp    = $oldest_slave->{Read_Master_Log_Pos};
+  # 最新从库的Master_Log_File和Read_Master_Log_Pos
   my $latest_mlf    = $latest_slaves[0]->{Master_Log_File};
   my $latest_mlp    = $latest_slaves[0]->{Read_Master_Log_Pos};
 
   if (
+    # 0 最老 和 最新的从库所包含relay 相同 。
+    # 1 其他
+    # -1 最老的从库上relay log少于 最新的
     $_server_manager->pos_cmp( $oldest_mlf, $oldest_mlp, $latest_mlf,
       $latest_mlp ) >= 0
     )
@@ -877,6 +905,7 @@ sub find_latest_base_slave_internal {
   else {
 
 # We pick relay logs here. This should not reconfigure slave settings until other slaves connect to new master
+    # 寻找含有足够中继日志的从库
     my $target =
       find_slave_with_all_relay_logs( $oldest_slave->{Master_Log_File},
       $oldest_slave->{Read_Master_Log_Pos} );
@@ -939,10 +968,12 @@ sub find_latest_base_slave_internal {
 
 sub find_latest_base_slave($) {
   my $dead_master = shift;
+  # 含有所有relay log的最新的从库
   $log->info(
 "Finding the latest slave that has all relay logs for recovering other slaves.."
   );
   my $latest_base_slave = find_latest_base_slave_internal();
+  # 如果没有从库含有足够的relay log , 报错退出
   unless ($latest_base_slave) {
     my $msg = "None of the latest slaves has enough relay logs for recovery.";
     $log->error($msg);
@@ -1021,14 +1052,14 @@ sub send_binlog {
 sub generate_diff_from_readpos {
   my ( $target, $latest_slave, $logger ) = @_;
   $logger = $log unless ($logger);
-
+  # 打印新主位点 和 latest slave的位点 Master_Log_File 与 Read_Master_Log_Pos
   $logger->info(
 "Server $target->{hostname} received relay logs up to: $target->{Master_Log_File}:$target->{Read_Master_Log_Pos}"
   );
   $logger->info(
 "Need to get diffs from the latest slave($latest_slave->{hostname}) up to: $latest_slave->{Master_Log_File}:$latest_slave->{Read_Master_Log_Pos} (using the latest slave's relay logs)"
   );
-
+  # 检查ssh
   my $ssh_user_host = $latest_slave->{ssh_user} . '@' . $latest_slave->{ssh_ip};
   my ( $high, $low ) =
     MHA::ManagerUtil::exec_ssh_cmd( $ssh_user_host, $latest_slave->{ssh_port},
@@ -1041,6 +1072,7 @@ sub generate_diff_from_readpos {
   $logger->info(
 "Connecting to the latest slave host $latest_slave->{hostname}, generating diff relay log files.."
   );
+  # 组装命令 apply_diff_relay_logs --command=generate_and_send
   my $command =
 "apply_diff_relay_logs --command=generate_and_send --scp_user=$target->{ssh_user} --scp_host=$target->{ssh_ip} --latest_mlf=$latest_slave->{Master_Log_File} --latest_rmlp=$latest_slave->{Read_Master_Log_Pos} --target_mlf=$target->{Master_Log_File} --target_rmlp=$target->{Read_Master_Log_Pos} --server_id=$latest_slave->{server_id} --diff_file_readtolatest=$target->{diff_file_readtolatest} --workdir=$latest_slave->{remote_workdir} --timestamp=$_start_datetime --handle_raw_binlog=$target->{handle_raw_binlog} --disable_log_bin=$target->{disable_log_bin} --manager_version=$MHA::ManagerConst::VERSION";
   if ( $latest_slave->{client_bindir} ) {
@@ -1077,12 +1109,13 @@ sub generate_diff_from_readpos {
     "$g_workdir/$latest_slave->{hostname}_$latest_slave->{port}.work" );
 }
 
-# 0: no need to generate diff
-# 15: generating diff succeeded
-# 1: fail
+# 0: no need to generate diff 不需要新主与latest slave生成差异日志
+# 15: generating diff xsucceeded 生成差异日志成功
+# 1: fail 生成差异日志失败
 sub recover_relay_logs {
   my ( $target, $latest_slave, $logger ) = @_;
   $logger = $log unless ($logger);
+  # 如果新主不是最新的从库 （latest slave） ，需要对比新主与latest slave中继日志的位点并保存差异的日志
   if ( $target->{latest} eq '0' ) {
     my ( $high, $low ) =
       generate_diff_from_readpos( $target, $latest_slave, $logger );
@@ -1295,11 +1328,20 @@ sub gen_diff_from_exec_to_read {
   return 0;
 }
 
+# 一 首先，它等待从库应用完中继日志，然后停止SQL线程并检查从库状态。如果状态为从库，它会获取中继日志和主日志的位置信息，以便后面生成差异。
+
+# 二 接下来，它生成从执行位置到当前读取位置之间的差异，然后检查是否需要考虑中途出现的事务。
+# 如果需要，它会生成从读取位置到最新位置之间的差异。
+
+# 三 如果主库上的二进制日志已经备份好，它还会生成主库二进制日志和当前从库位置之间的差异。
+# 最后，它将所有差异文件的名称连接起来，并使用SSH连接到目标从库，执行一个称为"apply_diff_relay_logs"的恢复脚本，将差异应用到从库上。
+
+# 如果脚本执行成功，它将返回两个整数值，分别表示恢复后从库的最高和最低位置。否则，它将返回一个非零值来表示错误，并记录错误日志。
 sub apply_diff {
   my ( $target, $logger ) = @_;
   $logger = $log unless ($logger);
   my $ret = 0;
-
+  # 等待新主应用完 relay log
   $logger->info("Waiting until all relay logs are applied.");
   $ret = $target->wait_until_relay_log_applied();
   if ($ret) {
@@ -1307,9 +1349,11 @@ sub apply_diff {
     return $ret;
   }
   $logger->info(" done.");
+  # 停止SQL thread
   $target->stop_sql_thread($logger);
   $logger->info("Getting slave status..");
   my %status = $target->check_slave_status();
+  # status == 0 为从库
   if ( $status{Status} eq '0' ) {
     $target->{Relay_Master_Log_File} = $status{Relay_Master_Log_File};
     $target->{Exec_Master_Log_Pos}   = $status{Exec_Master_Log_Pos};
@@ -1326,16 +1370,20 @@ sub apply_diff {
   return ( $ret, 0 ) if ($ret);
 
   # if exec pos != read pos (relay logs cut in transactions)
+  # 文件名称 {remote_workdir}/relay_from_exec_to_read_{hostname}_{port}_{$_start_datetime}_{$_saved_file_suffix}
   my $exec_diff = $target->{relay_from_exectoread};
 
   # if read pos != latest (io thread)
+  # 文件名称 {remote_workdir}/relay_from_read_to_latest_{hostname}_{port}_{$_start_datetime}.{$_saved_file_suffix}
   my $read_diff = $target->{diff_file_readtolatest};
 
   # if binlogs are rescued from master
+  # {remote_workdir}/$_diff_binary_log_basename
   my $binlog_diff;
   if ($_diff_binary_log_basename) {
     $binlog_diff = "$target->{remote_workdir}/$_diff_binary_log_basename";
   }
+  # 三种差异日志
   my @diffs;
   push @diffs, $exec_diff   if ($exec_diff);
   push @diffs, $read_diff   if ( $read_diff && !$target->{latest} );
@@ -1379,8 +1427,8 @@ sub apply_diff {
   return ( $high, $low );
 }
 
-# apply diffs to master and get master status
-# We do not reset slave here
+# apply diffs to master and get master status 应用差异的中继日志到新主，然后获取主库的状态
+# We do not reset slave here 在这里不会reset  slave;
 sub recover_slave {
   my ( $target, $logger ) = @_;
   $logger = $log unless ($logger);
@@ -1391,7 +1439,7 @@ sub recover_slave {
       $target->{hostname}, $target->{ip}, $target->{port}
     )
   );
-
+  # 新主不是最新 或者 $_has_saved_binlog为1（已经保存了dead master的日志）
   if ( $target->{latest} eq '0' || $_has_saved_binlog ) {
     $logger->info(" Generating diffs succeeded.");
     my ( $high, $low ) = apply_diff( $target, $logger );
@@ -1400,6 +1448,7 @@ sub recover_slave {
       return -1;
     }
   }
+  # 新主是最新的从库 ，从库之间中继日志的差异已经没有了 ，等待新主上的relay log通过SQL thread应用完即可
   else {
     $logger->info(
       " This server has all relay logs. Waiting all logs to be applied.. ");
@@ -1409,6 +1458,7 @@ sub recover_slave {
       return -1;
     }
     $logger->info("  done.");
+    # 停止 SQL thread
     $target->stop_sql_thread($logger);
   }
   $logger->info(" All relay logs were successfully applied.");
@@ -1461,6 +1511,7 @@ sub apply_binlog_to_master($) {
   return 0;
 }
 
+# gtid 模式恢复 里面包含3.3阶段
 sub recover_master_gtid_internal($$$) {
   my $target            = shift;
   my $latest_slave      = shift;
@@ -1471,6 +1522,7 @@ sub recover_master_gtid_internal($$$) {
   $log->info("* Phase 3.3: New Master Recovery Phase..\n");
   $log->info();
   $log->info(" Waiting all logs to be applied.. ");
+  # 等待新主库应用完所有的中继日志
   my $ret = $target->wait_until_relay_log_applied($log);
 
   if ($ret) {
@@ -1478,13 +1530,16 @@ sub recover_master_gtid_internal($$$) {
     return -1;
   }
   $log->info("  done.");
+  # 在新主上执行 stop slave的命令
   $target->stop_slave($log);
+  # 如果新主不是最新的从库
   if ( $target->{id} ne $latest_slave->{id} ) {
     $log->info(
       sprintf( " Replicating from the latest slave %s and waiting to apply..",
         $latest_slave->get_hostinfo() )
     );
     $log->info(" Waiting all logs to be applied on the latest slave.. ");
+    # 等待最新的从库应用完中继日志
     $ret = $latest_slave->wait_until_relay_log_applied($log);
     if ($ret) {
       $log->error(" Failed with return code $ret");
@@ -1493,6 +1548,7 @@ sub recover_master_gtid_internal($$$) {
     $latest_slave->current_slave_position();
     $relay_master_log_file = $latest_slave->{Relay_Master_Log_File};
     $exec_master_log_pos   = $latest_slave->{Exec_Master_Log_Pos};
+    # 把新主作为latest的从
     $ret =
       $_server_manager->change_master_and_start_slave( $target, $latest_slave,
       undef, undef, $log );
@@ -1508,31 +1564,39 @@ sub recover_master_gtid_internal($$$) {
     $log->info("  done.");
   }
   else {
+    # 新主就是最新的从库 ，直接获取位点
     $target->current_slave_position();
     $relay_master_log_file = $target->{Relay_Master_Log_File};
     $exec_master_log_pos   = $target->{Exec_Master_Log_Pos};
   }
   if (
+      #  从binlog server保存 新主与binlog server差异的binlog日志
     save_from_binlog_server(
       $relay_master_log_file, $exec_master_log_pos, $binlog_server_ref
     )
     )
   {
+    # 应用新主与binlog server差异的binlog日志
     apply_binlog_to_master($target);
   }
+  # 返回新主的位点
   return $_server_manager->get_new_master_binlog_position($target);
 }
 
+# 非GTID模式的恢复主 里面包含 3.4 、 3.5 阶段
 sub recover_master_internal($$) {
   my $target       = shift;
   my $latest_slave = shift;
   $log->info();
+  # 新主与latest slave之间生成差异中继日志
   $log->info("* Phase 3.4: New Master Diff Log Generation Phase..\n");
   $log->info();
   my $rc = recover_relay_logs( $target, $latest_slave );
+  # rc存在 不为0 并且 不等于15 ，即生成失败 返回空
   if ( $rc && $rc != $GEN_DIFF_OK ) {
     return;
   }
+  # 根据参数去执行这个函数，传输binlog到新主 ，1 失败 0是成功 。如果失败 直接返回
   if ( send_binlog($target) ) {
     return;
   }
@@ -1555,6 +1619,7 @@ sub recover_master($$$$) {
   my $binlog_server_ref = shift;
 
   my ( $master_log_file, $master_log_pos, $exec_gtid_set );
+  # GTID模式 恢复主
   if ( $_server_manager->is_gtid_auto_pos_enabled() ) {
     ( $master_log_file, $master_log_pos, $exec_gtid_set ) =
       recover_master_gtid_internal( $new_master, $latest_base_slave,
@@ -1572,6 +1637,7 @@ sub recover_master($$$$) {
       )
     );
   }
+  # 非GTID模式
   else {
     ( $master_log_file, $master_log_pos ) =
       recover_master_internal( $new_master, $latest_base_slave );
@@ -1588,7 +1654,7 @@ sub recover_master($$$$) {
   }
   $mail_body .=
     $new_master->get_hostinfo() . ": OK: Applying all logs succeeded.\n";
-
+  # 在新主上上线VIP 或 做其他的操作 ，这时候新主已经可以队尾提供服服务了。先恢复主库 再恢复从库可能是为了缩短不可用时间
   if ( $new_master->{master_ip_failover_script} ) {
     my $command =
 "$new_master->{master_ip_failover_script} --command=start --ssh_user=$new_master->{ssh_user} --orig_master_host=$dead_master->{hostname} --orig_master_ip=$dead_master->{ip} --orig_master_port=$dead_master->{port} --new_master_host=$new_master->{hostname} --new_master_ip=$new_master->{ip} --new_master_port=$new_master->{port} --new_master_user=$new_master->{escaped_user}";
@@ -1626,6 +1692,7 @@ sub recover_master($$$$) {
   }
 
   # Allow write access on master (if read_only==1)
+  # 在master 上 设置 可写 。
   unless ($g_skip_disable_read_only) {
     $new_master->disable_read_only();
   }
@@ -1976,12 +2043,13 @@ sub recover_slaves($$$$$$) {
   my $master_log_pos    = shift;
   my $exec_gtid_set     = shift;
   my $recover_slave_rc;
-
+  # GTID模式
   if ( $_server_manager->is_gtid_auto_pos_enabled() ) {
     $recover_slave_rc =
       recover_slaves_gtid_internal( $new_master, $exec_gtid_set );
   }
   else {
+    # 非GTID模式
     if ( recover_all_slaves_relay_logs( $new_master, $latest_base_slave ) ) {
       my $msg = "Generating relay diff files from the latest slave failed.";
       $log->error($msg);
@@ -2098,69 +2166,90 @@ sub do_master_failover {
   my ( $dead_master, $new_master );
 
   eval {
+    # 读取配置文件 ，返回 server 和 binlog server的两个数组 ，数组中是hash 表 。 变量都是全局的
     my ( $servers_config_ref, $binlog_server_ref ) = init_config();
+    # 打印日志 开始 主库故障转移
     $log->info("Starting master failover.");
     $log->info();
+    # 阶段1 检查配置文件
     $log->info("* Phase 1: Configuration Check Phase..\n");
     $log->info();
+    # 初始化binlog server 包括两方面 ：检查ssh连通性以及 从binlog server获取node version
     MHA::ServerManager::init_binlog_server( $binlog_server_ref, $log );
+    # 检查配置
     $dead_master = check_settings($servers_config_ref);
+    # GTID 模式 1
     if ( $_server_manager->is_gtid_auto_pos_enabled() ) {
       $log->info("Starting GTID based failover.");
     }
+    # 非GTID模式 0
     else {
       $_server_manager->force_disable_log_bin_if_auto_pos_disabled();
       $log->info("Starting Non-GTID based failover.");
     }
     $log->info();
+    # 阶段1 完成配置文件阶段
     $log->info("** Phase 1: Configuration Check Phase completed.\n");
     $log->info();
+    # 阶段2 主库关机 执行 master_ip_failover_script脚本 （下线VIP上线VIP的脚本） 和   shutdown_script 脚本
     $log->info("* Phase 2: Dead Master Shutdown Phase..\n");
     $log->info();
     force_shutdown($dead_master);
 
     $log->info("* Phase 2: Dead Master Shutdown Phase completed.\n");
     $log->info();
+    # 阶段3 主库恢复阶段
     $log->info("* Phase 3: Master Recovery Phase..\n");
     $log->info();
-
+    # 3.1 找到最新的从库
     $log->info("* Phase 3.1: Getting Latest Slaves Phase..\n");
     $log->info();
+    # 检查打印含有最新latest 、 最旧oldest的binlog的文件和位点的从库
     check_set_latest_slaves();
-
+    # 如果不是GTID模式 进入到3.2阶段 保存宕机主库比latest多的binlog；
+    # GITD模式不会保存宕机主库的binlog日志
     if ( !$_server_manager->is_gtid_auto_pos_enabled() ) {
       $log->info();
       $log->info("* Phase 3.2: Saving Dead Master's Binlog Phase..\n");
       $log->info();
+      # 使用mysqlbinlog保存  ，row 和 RAW binlog的两种格式？？
       save_master_binlog($dead_master);
     }
 
     $log->info();
+    # 3.3 阶段 选主阶段
     $log->info("* Phase 3.3: Determining New Master Phase..\n");
     $log->info();
 
     my $latest_base_slave;
+    # GTID模式
     if ( $_server_manager->is_gtid_auto_pos_enabled() ) {
+      # 在所有最新的从库(@latest数组)中找到中继日志应用最多的从库。
+      # 比对Relay_Master_Log_File 和 Exec_Master_Log_Pos这两个值（SQL thread 相关）
       $latest_base_slave = $_server_manager->get_most_advanced_latest_slave();
     }
+    # 非GTID模式,找到含有足够relay log的从库
     else {
       $latest_base_slave = find_latest_base_slave($dead_master);
     }
+    # 选主
     $new_master = select_new_master( $dead_master, $latest_base_slave );
+    # 恢复主
     my ( $master_log_file, $master_log_pos, $exec_gtid_set ) =
       recover_master( $dead_master, $new_master, $latest_base_slave,
       $binlog_server_ref );
     $new_master->{activated} = 1;
-
+    # 阶段3 选主 恢复主完成
     $log->info("* Phase 3: Master Recovery Phase completed.\n");
     $log->info();
+    # 阶段4 恢复从库
     $log->info("* Phase 4: Slaves Recovery Phase..\n");
     $log->info();
     $error_code = recover_slaves(
       $dead_master,     $new_master,     $latest_base_slave,
       $master_log_file, $master_log_pos, $exec_gtid_set
     );
-
+    # 如果设置了修改配置文件 则去掉老主 然后保存
     if ( $g_remove_dead_master_conf && $error_code == 0 ) {
       MHA::Config::delete_block_and_save( $g_config_file, $dead_master->{id},
         $log );
@@ -2179,6 +2268,7 @@ sub do_master_failover {
     $_server_manager->disconnect_all() if ($_server_manager);
     undef $@;
   }
+  # 发送报告
   eval {
     send_report( $dead_master, $new_master );
     MHA::NodeUtil::drop_file_if( $_status_handler->{status_file} )

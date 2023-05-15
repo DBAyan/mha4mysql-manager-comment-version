@@ -28,6 +28,8 @@ use Log::Dispatch;
 use Log::Dispatch::File;
 use Log::Dispatch::Screen;
 
+# file_name 不存在输出到屏幕 ，file_name 存在输出到日志 ，
+# 这也是刚开始的一些日志 即使配置了在了配置文件中，也会有一部分日志只输出到屏幕上 ，不会记录到日志文件中。
 sub init_log {
   my $log_output = shift;
   my $level      = shift;

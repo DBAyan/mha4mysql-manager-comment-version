@@ -508,11 +508,11 @@ sub validate_num_alive_servers($$$) {
 }
 
 # Check the following
-# 1. All slaves are read_only (INFO)
-# 2. All slaves see the same master ip/port (ERROR)
-# 3. All slaves set relay_log_purge=0 (WARN)
-# 4. All slaves have same replication filter rules with a master (ERROR)
-# return 0: ok, others: NG
+# 1. All slaves are read_only (INFO) 从库必须设置为只读 info 级别
+# 2. All slaves see the same master ip/port (ERROR) 所有从实例的主库必须是相同的IP:PORT  error 级别
+# 3. All slaves set relay_log_purge=0 (WARN) 所有的从实例都设置了 relay_log_purge=0 warn 级别
+# 4. All slaves have same replication filter rules with a master (ERROR) 所有的从库都设置了相同的复制过滤规则 error级别
+# return 0: ok, others: NG  0 表示 OK 。 其他情况返回NG
 sub validate_slaves($$$) {
   my $self              = shift;
   my $check_repl_filter = shift;
@@ -916,15 +916,16 @@ sub is_master_reachable_from_slaves($$) {
   return 0;
 }
 
-# checking slave status again before starting main operations.
-# alive slaves info was already fetched by connect_all_and_read_server_status,
-# so check_slave_status should not fail here. If it fails, we die here.
+# checking slave status again before starting main operations. 再一次检查从实例的状态在main函数之前
+# alive slaves info was already fetched by connect_all_and_read_server_status, 搓火从实例的信息已经在connect_all_and_read_server_status 函数阶段收集到了
+# so check_slave_status should not fail here. If it fails, we die here. 所以check_slave_status这里应该不会失败 ，如果失败我们这种歌阶段die
 sub read_slave_status($) {
   my $self   = shift;
   my $log    = $self->{logger};
   my @slaves = $self->get_alive_slaves();
 
   $log->debug("Fetching current slave status..");
+  # 这里是循环数组@slaves的元素个数的次数 ， foreach 与 $_组合使用 ，$_ 变量表示当前迭代的元素
   foreach (@slaves) {
     my $dbhelper  = $_->{dbhelper};
     my ($sstatus) = ();
@@ -976,15 +977,23 @@ sub get_failover_advisory_locks($) {
 }
 
 sub identify_latest_slaves($$) {
+  # 在调用的时候没有出传入参数 $self 默认传入 ，不传入则为空？
   my $self        = shift;
   my $find_oldest = shift;
+  # 变量$find_oldest没有值 则设置为0
   $find_oldest = 0 unless ($find_oldest);
   my $log    = $self->{logger};
+  # 获取存活的从实例
   my @slaves = $self->get_alive_slaves();
+  # 定义一个空数组
   my @latest = ();
+  # 进入到一个循环 ，$_ 与 foreache配合使用，不用再自己定义变量了
   foreach (@slaves) {
+    # $a  $b 为空
     my $a = $latest[0]{Master_Log_File};
     my $b = $latest[0]{Read_Master_Log_Pos};
+    # 寻找含有最新binlog的从库 。latest (最新)
+    # 如果 参数$find_oldest为0 并且 $a为空。 gt 大于  ge 等于 ，如果该从库的Master_Log_File 大于 $latest数组中的Master_Log_File ; 或者 Master_Log_File相等，但是postion 大于 latest数组的值；则追加到@latest
     if (
       !$find_oldest
       && (
@@ -998,6 +1007,8 @@ sub identify_latest_slaves($$) {
       @latest = ();
       push( @latest, $_ );
     }
+    # 寻找最老的binlog的从库
+    # 若果$find_oldest==1 并且 $a为空且 $b没有定义 ，或者 该从库的 Master_Log_File 小于  $latest数组中的Master_Log_File； 或者 Master_Log_File相等，但是postion 小于于 latest数组的值；则追加到@latest
     elsif (
       $find_oldest
       && (
@@ -1011,16 +1022,20 @@ sub identify_latest_slaves($$) {
       @latest = ();
       push( @latest, $_ );
     }
+    # 如果文件和位点都相等 继续追加
     elsif ( ( $_->{Master_Log_File} eq $latest[0]{Master_Log_File} )
       && ( $_->{Read_Master_Log_Pos} == $latest[0]{Read_Master_Log_Pos} ) )
     {
       push( @latest, $_ );
     }
   }
+  # 循环遍历 @latest数组
   foreach (@latest) {
-    $_->{latest} = 1 if ( !$find_oldest );
-    $_->{oldest} = 1 if ($find_oldest);
+    $_->{latest} = 1 if ( !$find_oldest ); # 如果$find_oldest没有定义 则将latest设置为1
+    $_->{oldest} = 1 if ($find_oldest); # 如果$find_oldest有定义 oldest设置为1
   }
+
+  # 打印最新最老的binlog日志信息
   $log->info(
     sprintf(
       "The %s binary log file/position on all slaves is" . " %s:%d\n",
@@ -1028,10 +1043,12 @@ sub identify_latest_slaves($$) {
       $latest[0]{Read_Master_Log_Pos}
     )
   );
+  # 打印Retrieved_Gtid_Set的信息
   if ( $latest[0]{Retrieved_Gtid_Set} ) {
     $log->info(
       sprintf( "Retrieved Gtid Set: %s", $latest[0]{Retrieved_Gtid_Set} ) );
   }
+  # 设置最新 最老的从库信息 到 _manager_server 对象中
   if ($find_oldest) {
     $self->set_oldest_slaves( \@latest );
   }
@@ -1039,7 +1056,7 @@ sub identify_latest_slaves($$) {
     $self->set_latest_slaves( \@latest );
   }
 }
-
+# 调用了identify_latest_slaves函数 但是参数$find_oldest设置为1
 sub identify_oldest_slaves($) {
   my $self = shift;
   return $self->identify_latest_slaves(1);
@@ -1048,6 +1065,11 @@ sub identify_oldest_slaves($) {
 # 1: higher
 # -1: older
 # 0: equal
+# 位点对比
+# 0 最老 和 最新的从库所包含relay 相同 。
+# 1 其他
+# -1 最老的从库上relay log  少于 最新的
+
 sub pos_cmp {
   my ( $self, $a_mlf, $a_mlp, $b_mlf, $b_mlp ) = @_;
   return 0 if ( $a_mlf eq $b_mlf && $a_mlp == $b_mlp );
@@ -1110,8 +1132,8 @@ sub get_most_advanced_latest_slave($) {
 }
 
 # check slave is too behind master or not
-# 0: no or acceptable delay
-# 1: unacceptable delay (can not be a master)
+# 0: no or acceptable delay 没有延迟 或者 可接收延迟  返回0
+# 1: unacceptable delay (can not be a master) 不可接受的延迟 位点落后最新从库 100000000 （100MB） 返回1
 sub check_slave_delay($$$) {
   my $self   = shift;
   my $target = shift;
@@ -1139,12 +1161,12 @@ sub check_slave_delay($$$) {
   return 0;
 }
 
-# The following servers can not be master:
-# - dead servers
-# - Set no_master in conf files (i.e. DR servers)
-# - log_bin is disabled
-# - Major version is not the oldest
-# - too much replication delay
+# The following servers can not be master: 以下的从库不能成为新的主库
+# - dead servers 宕机的实例
+# - Set no_master in conf files (i.e. DR servers) 在配置文件设置了no_master的实例
+# - log_bin is disabled 二进制日志没有开启
+# - Major version is not the oldest 从库中版本不是最新的不能成为主库
+# - too much replication delay 延迟太高的从库 落后最新的从库100M的实例
 sub get_bad_candidate_masters($$$) {
   my $self                    = shift;
   my $latest_slave            = shift;
@@ -1181,9 +1203,13 @@ sub is_target_bad_for_new_master {
   return 0;
 }
 
-# Picking up new master
-# If preferred node is specified, one of active preferred nodes will be new master.
-# If the latest server behinds too much (i.e. stopping sql thread for online backups), we should not use it as a new master, but we should fetch relay log there. Even though preferred master is configured, it does not become a master if it's far behind.
+# Picking up new master 选主
+# If preferred node is specified, one of active preferred nodes will be new master. 如果设置了候选主库 ，则其中一个存活的候选主将成为新主
+# If the latest server behinds too much (i.e. stopping sql thread for online backups), we should not use it as a new master, but we should fetch relay log there.
+# Even though preferred master is configured, it does not become a master if it's far behind.
+# 如果最新的从 落后主库太多 （停止SQL threadz在一个线上的备份库），我们也不会将他选举为新主，但我们可以从这里获取relay log 。
+# 即使设置了候选主，也不会成为新主如果延迟太多
+
 sub select_new_master {
   my $self                    = shift;
   my $prio_new_master_host    = shift;
@@ -1192,10 +1218,13 @@ sub select_new_master {
   $check_replication_delay = 1 if ( !defined($check_replication_delay) );
 
   my $log    = $self->{logger};
+  # 含有最新relay log的从库数组
   my @latest = $self->get_latest_slaves();
+  # 存活的从库数组
   my @slaves = $self->get_alive_slaves();
-
+  # 设置了候选主的数组
   my @pref = $self->get_candidate_masters();
+  # 不能成为新主的数组 ，4种情况
   my @bad =
     $self->get_bad_candidate_masters( $latest[0], $check_replication_delay );
 
@@ -1226,9 +1255,13 @@ sub select_new_master {
   $log->info(" Non-candidate masters:");
   $self->print_servers( \@bad );
 
+#   数组 @pref 和 @bad 都为空，（即它们的长度都小于0）
+# $latest[0]->{latest_priority} 的值为真（即不为0或者未定义）
+  # 则返回@latest的第一个元素
   return $latest[0]
     if ( $#pref < 0 && $#bad < 0 && $latest[0]->{latest_priority} );
 
+  # 从@pre数组中寻找主 ， latest中 包含 含有了所有relay的最新从库，如果@pref中的slave存在在@latest数组中，并且不在@bad数组中 ，成为主
   if ( $latest[0]->{latest_priority} ) {
     $log->info(
 " Searching from candidate_master slaves which have received the latest relay log events.."
@@ -1245,6 +1278,8 @@ sub select_new_master {
   }
 
   #new master is not latest
+  #  从@pre数组中寻找主 ，并且@pre数组中的slave 在@slaves数组中 ，并且不在@bad数组中 ，这个slave 成为新主
+  #  @pref不为空（设置了候选主） ，从@slaves数组中找到一个在@pref数组中的slave,并且这个从库不在@bad数组中
   $log->info(" Searching from all candidate_master slaves..")
     if ( $#pref >= 0 );
   foreach my $s (@slaves) {
@@ -1257,6 +1292,7 @@ sub select_new_master {
   }
   $log->info("  Not found.") if ( $#pref >= 0 );
 
+  # 从@latest数组寻找新主 。如果@latest数组中含有所有的relay的slave ，并且不在@bad数组中 则该从库成为主
   if ( $latest[0]->{latest_priority} ) {
     $log->info(
 " Searching from all slaves which have received the latest relay log events.."
@@ -1268,6 +1304,7 @@ sub select_new_master {
     $log->info("  Not found.");
   }
 
+  # 从@slaves寻找新主 。如果@slaves中的slave不在@bad数组 ，成为主
   # none of latest servers can not be a master
   $log->info(" Searching from all slaves..");
   foreach my $s (@slaves) {
@@ -1335,17 +1372,20 @@ sub change_master_and_start_slave {
       $master->get_hostinfo()
     )
   );
+  # 停止复制 执行命令stop slave
   $target->stop_slave($log) unless ( $target->{not_slave} );
+  # 重置slave  执行命令reset slave
   $dbhelper->reset_slave()  unless ( $target->{not_slave} );
   my $addr =
       $target->{use_ip_for_change_master}
     ? $master->{ip}
     : $master->{hostname};
-
+  # GTID模式并且不是mariadb
   if ( $self->is_gtid_auto_pos_enabled() && !$target->{is_mariadb} ) {
     $dbhelper->change_master_gtid( $addr, $master->{port},
       $master->{repl_user}, $master->{repl_password} );
   }
+  # 非GTID模式
   else {
     $dbhelper->change_master( $addr,
       $master->{port}, $master_log_file, $master_log_pos, $master->{repl_user},
@@ -1554,6 +1594,7 @@ sub get_gtid_status($) {
 
 sub is_gtid_auto_pos_enabled($) {
   my $self = shift;
+  # 如果 gtid_failover_mode==1 返回1 ，否则返回0 。1：GTID  。 0 ： 非GTID
   return 1 if ( $self->{gtid_failover_mode} == 1 );
   return 0;
 }

@@ -30,6 +30,8 @@ use MHA::Server;
 use MHA::NodeUtil;
 use MHA::ManagerConst;
 
+
+# 将"@PARAM_ARRAY"数组中的每个元素作为哈希表"%PARAM"的键，将它们的值都设置为1。通过这种方式，可以使用哈希表查询每个配置参数是否在"@PARAM_ARRAY"数组中定义。
 my @PARAM_ARRAY =
   qw/ hostname ip port ssh_host ssh_ip ssh_port ssh_connection_timeout ssh_options node_label candidate_master no_master ignore_fail skip_init_ssh_check skip_reset_slave user password repl_user repl_password disable_log_bin master_pid_file handle_raw_binlog ssh_user remote_workdir master_binlog_dir log_level manager_workdir manager_log check_repl_delay check_repl_filter latest_priority multi_tier_slave ping_interval ping_type secondary_check_script master_ip_failover_script master_ip_online_change_script shutdown_script report_script init_conf_load_script client_bindir client_libdir use_gtid_auto_pos/;
 my %PARAM;
@@ -335,6 +337,7 @@ sub read_config($) {
   my $configfile        = $self->{file};
   my $sd;
 
+  # 如果全局配置文件存在，则从中读取默认配置
   if ( -f $global_configfile ) {
     my $global_cfg = Config::Tiny->read($global_configfile)
       or croak "Unable to parse/read configuration file: $global_configfile: $!\n";
@@ -344,12 +347,14 @@ sub read_config($) {
     $sd = $self->parse_server_default( $global_cfg->{"server default"} );
   }
   else {
+    # 如果全局配置文件不存在，则记录警告，并创建一个默认的 MHA::Server 对象
     $log->warning(
       "Global configuration file $self->{globalfile} not found. Skipping.")
       if ($log);
     $sd = new MHA::Server();
   }
 
+  # 读取应用程序默认配置
   my $cfg = Config::Tiny->read($configfile) or croak "$configfile:$!\n";
   $log->info("Reading application default configuration from $self->{file}..")
     if ($log);
@@ -357,6 +362,7 @@ sub read_config($) {
   # Read application default settings
   $sd = $self->parse_server( $cfg->{"server default"}, $sd );
 
+  # 如果指定了 init_conf_load_script，则使用该脚本更新默认配置
   if ( defined( $sd->{init_conf_load_script} ) ) {
     $log->info( "Updating application default configuration from "
         . $sd->{init_conf_load_script}
@@ -438,6 +444,17 @@ sub read_config($) {
     }
   }
 
+  # TODO add by yhh
+  print("\@servers add by yanhaihang to test:@servers\n");
+
+  foreach my $hash_table (@servers) {
+    while (my ($key,$value) = each %{$hash_table}) {
+      # 要加一个判断value是否有值 否则报错 Use of uninitialized value in concatenation (.) or string at
+      if ($value) {
+        print("$key => $value\n");
+      }
+    }
+  };
   return ( \@servers, \@binlog_servers );
 }
 

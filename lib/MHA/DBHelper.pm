@@ -581,10 +581,10 @@ sub check_slave_status {
   my $ret = $sth->execute();
   if ( !defined($ret) || $ret != 1 ) {
 
-    # I am not a slave
+    # I am not a slave 1 不为从
     $status{Status} = 1;
 
-    # unexpected error
+    # unexpected error 2 非预期的错误
     if ( defined( $sth->errstr ) ) {
       $status{Status} = 2;
       $status{Errstr} =
@@ -661,29 +661,34 @@ sub read_all_relay_log {
   my $sql_thread_check;
 
   my %status;
+  # 是个循环 要等待所有的relay log 被应用完
   do {
     $sql_thread_check = 1;
     %status           = $self->check_slave_status();
+    # 如果不能正确创建连接mysql的对象 返回
     if ( $status{Status} != 0 ) {
       return %status;
     }
+    # 如果IO thread 为yes ，也就是可以连接到master ，检查主库的状态
     elsif ( !$io_thread_should_run && $status{Slave_IO_Running} eq "Yes" ) {
       $status{Status} = 3;
       $status{Errstr} = "Slave IO thread is running! Check master status.";
       return %status;
     }
+    # 如果SQL thread为no ，则不能再消费relay log 。检查从库状态
     elsif ( $status{Slave_SQL_Running} eq "No" ) {
       $status{Status} = 4;
       $status{Errstr} = "SQL thread is not running! Check slave status.";
       return %status;
     }
+    # 如果Master_Log_File = Relay_Master_Log_File && Read_Master_Log_Pos = Exec_Master_Log_Pos。意思relay log 已经被消费完
     elsif ( ( $status{Master_Log_File} eq $status{Relay_Master_Log_File} )
       && ( $status{Read_Master_Log_Pos} == $status{Exec_Master_Log_Pos} ) )
     {
       $status{Status} = 0;
       return %status;
     }
-
+    # 如果$io_thread_should_run不为0
     if ($io_thread_should_run) {
       if (!$status{Slave_IO_State}
         || $status{Slave_IO_State} !~ m/Waiting for master to send event/ )
@@ -691,19 +696,25 @@ sub read_all_relay_log {
         $sql_thread_check = 0;
       }
     }
+    # $sql_thread_check=1
     if ($sql_thread_check) {
+      # 完成relay log消费的SQL thread个数初始为0
       my $sql_thread_done    = 0;
+      # work thread线程 初始为0
       my $worker_thread_done = 0;
+      # $current_workers初始为0
       my $current_workers    = 0;
       my $sth                = $self->{dbh}->prepare(Show_Processlist_SQL);
       $sth->execute();
       while ( my $ref = $sth->fetchrow_hashref ) {
         my $user  = $ref->{User};
         my $state = $ref->{State};
+        # 如果show processlist中 user 为 system user
         if ( defined($user)
           && $user eq "system user"
           && defined($state) )
         {
+          # 如果
           if ( $state =~ m/^Has read all relay log/
             || $state =~ m/^Slave has read all relay log/ )
           {

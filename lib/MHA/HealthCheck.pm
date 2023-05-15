@@ -629,7 +629,21 @@ sub fork_exec($$$) {
   }
 }
 
+
+
+# 该函数是一个Perl脚本中的子例程，主要用于在Master MySQL实例无法连接时等待直到其不可达。
+# 函数的输入参数是一个对象的引用，该对象包含了所需的信息，例如连接MySQL实例所需的参数，日志记录器等等。
+# 函数中的主要逻辑如下：
+# 通过eval包裹函数的主体部分，用于捕获可能发生的异常情况。
+# 进入一个while循环，不断检测MySQL实例是否可达，如果不可达则进行重连并等待下一次检测。
+# 如果连接失败，函数会增加错误计数并进行相应的处理（例如打印日志、等待一段时间等等）。
+# 如果错误计数超过指定阈值，则函数会检查SSH是否可达以及主实例是否已经停止。如果主实例已经停止，则跳出while循环。
+# 如果连接成功，则进行MySQL实例的健康检查，并更新状态信息。
+# 如果健康检查失败，则增加错误计数并进行相应的处理（例如打印日志、等待一段时间等等）。
+# 重复执行步骤2-6，直到MySQL实例不可达或者主实例已经停止。
+# 返回值为一个整数，如果主实例已经停止，则返回(0, $ssh_reachable)，其中$ssh_reachable表示SSH是否可达；如果MySQL实例不可达，则返回1；否则返回0。
 # main function
+
 sub wait_until_unreachable($) {
   my $self           = shift;
   my $log            = $self->{logger};
@@ -638,13 +652,15 @@ sub wait_until_unreachable($) {
   my $master_is_down = 0;
 
   eval {
-    while (1) {
+    while (1) { # 循环监控主实例是否可达
       $self->{_tstart} = [gettimeofday];
       if ( $self->{_need_reconnect} ) {
         my ( $rc, $mysql_err ) =
           $self->connect( undef, undef, undef, undef, undef, $error_count );
-        if ($rc) {
+        if ($rc) {  # 如果连接存在错误
+          # 存在mysql错误
           if ($mysql_err) {
+            # mysql错误为mysql连接失败标准错误 ，有错误但是存活 ,则继续进行健康检查
             if (
               grep ( $_ == $mysql_err, @MHA::ManagerConst::ALIVE_ERROR_CODES )
               > 0 )
@@ -653,29 +669,37 @@ sub wait_until_unreachable($) {
 "Got MySQL error $mysql_err, but this is not a MySQL crash. Continue health check.."
               );
               $self->sleep_until();
+              # 继续循环
               next;
             }
           }
+          # 如果连接失败 错误计数 + 1
           $error_count++;
+          # 打印日志
           $log->warning("Connection failed $error_count time(s)..");
           $self->handle_failing();
-
+          # 如果错误计数超过4次，则检查SSH是否可达，主实例是否已经停止，若停止则跳出循环
           if ( $error_count >= 4 ) {
             $ssh_reachable = $self->is_ssh_reachable();
+            # 二路脚本检查失败 将 $master_is_down表示改为1
             $master_is_down = 1 if ( $self->is_secondary_down() );
+            # last 跳出循环 $master_is_down存在
             last if ($master_is_down);
             $error_count = 0;
           }
+          # 继续 sleep 等待下一次检查
           $self->sleep_until();
           next;
         }
 
-        # connection ok
+        # connection ok 如果连接不存在错误
         $self->{_need_reconnect} = 0;
+        # 打印日志连接正常
         $log->info(
 "Ping($self->{ping_type}) succeeded, waiting until MySQL doesn't respond.."
         );
       }
+      # 如果ping type 为 connect执行disconnect_if()
       $self->disconnect_if()
         if ( $self->{ping_type} eq $MHA::ManagerConst::PING_TYPE_CONNECT );
 
@@ -686,6 +710,10 @@ sub wait_until_unreachable($) {
       # read timeout, executing queries might take forever. To avoid this,
       # the parent process kills the child process if it won't exit within
       # <interval> seconds.
+
+      # 父进程创建了一个子进程，该子进程会每隔一段时间从MySQL中查询数据。
+      # 然而，由于DBD::mysql版本为4.022或更早的版本没有设置读取超时的选项，因此执行查询可能需要很长时间。
+      # 为避免这种情况，如果子进程在规定的时间间隔内没有退出，父进程将会杀死该子进程。
 
       my $child_exit_code;
       eval {
